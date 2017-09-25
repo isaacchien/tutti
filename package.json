@@ -1,0 +1,16 @@
+{
+  "name": "river-dash",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google-cloud/datastore": "^1.0.2",
+    "restify": "^4.3.1",
+    "restify-cors-middleware": "^1.0.1"
+  }
+}
