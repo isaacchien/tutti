@@ -7,9 +7,107 @@ var request = require('request');
 var client_id = '37c50fb2e74848a6841ddea2b1e195f2';
 var client_secret = '397cd71cbb2d45f7a9c7b848e162f706';
 
+
+function hello (){
+	console.log('hi')
+}
+function renewToken(psid, refreshToken){
+	console.log('renewToken');
+	var options = {
+      url: 'https://accounts.spotify.com/api/token',
+ 	  headers: { 'Authorization': 'Basic ' + (new Buffer(client_id + ':' + client_secret).toString('base64'))},
+      form: {
+      	grant_type: 'refresh_token',
+      	refresh_token: refreshToken
+ 		}
+    };
+    var promise = new Promise(function (resolve, reject){
+    	
+	    request.post(options, function (error, response, body){
+	    	// REFRESHED now get the user's old details
+	    	var accessToken = JSON.parse(body)['access_token'];
+
+	    	const refreshedUser = {
+				access_token: accessToken,
+				refresh_token: refreshToken
+			};
+
+			const userKey = datastore.key(['User', psid]);
+
+			const entity = {
+				key: userKey,
+				data: refreshedUser
+			}
+
+			datastore.update(entity)
+			  .then(() => {
+			    // Task inserted successfully.
+			    console.log('refreshed');
+			    resolve(accessToken);
+		    });
+	    });
+
+    })
+    return promise;
+}
+
+function playSongForUser(uri, psid, user) {
+	console.log('playSongForUser');
+	var options = {
+      url: 'https://api.spotify.com/v1/me/player/play',
+      headers: { 'Authorization': 'Bearer ' + user["access_token"] },
+      body: {'uris': [uri]},
+      json: true
+    };
+	return request.put(options, function (error, response, body){
+    	if (response.statusCode == 401){ // invalid token must renew
+    		renewToken(psid, user["refresh_token"])
+    		.then(function(newAccessToken){
+    			console.log("playing again with ", newAccessToken)
+    			user["access_token"] = newAccessToken;
+	            return playSongForUser(uri, psid, user);
+	    	});
+    	} else {
+    		return response.statusCode;
+    	}
+	});
+}
+
+function checkCurrentlyPlaying(originPSID, updatedThread){
+	console.log('check if playing');
+	const userKey = datastore.key(['User', originPSID]);
+	const query = datastore.createQuery('User')
+	  .filter('__key__ ', '=', userKey)
+	  .limit(1);
+	
+	var promise = new Promise(function (resolve, reject){
+		datastore.runQuery(query)
+		.then((results) => {
+			// Task entities found.
+			const user = results[0][0];
+			var accessToken = user["access_token"];
+			var options = {
+			  url: 'https://api.spotify.com/v1/me/player/currently-playing',
+				  headers: { 
+				  	'Authorization': 'Bearer ' + accessToken,
+				  	'Accept': 'application/json',
+				  	'Content-Type': 'application/json'
+				  }
+			};
+			request.get(options, function (error, response, body){
+				// check if spotify is open
+				console.log('response: ', response.statusCode);
+				resolve(response.statusCode);
+			});
+		});
+	});
+	return promise;
+}
+
 module.exports = function (router) {
 
 	router.post('/play', function (req, res, next) {
+		var originPSID = JSON.parse(req.body)['psid'];
 		var tid = JSON.parse(req.body)['tid'];
 		var duration = JSON.parse(req.body)['duration'];
 		var uri = JSON.parse(req.body)['uri'];
@@ -17,7 +115,6 @@ module.exports = function (router) {
 		var image = JSON.parse(req.body)['image'];
 		var artist = JSON.parse(req.body)['artist'];
 		var name = JSON.parse(req.body)['name'];
-		var accessToken;
 		// get user IDs
 
 		var promises = [];
@@ -26,84 +123,48 @@ module.exports = function (router) {
 
     	const threadKey = datastore.key(['Thread', tid]);
 		datastore.get(threadKey)
-		  .then((threadResults) => {
-		  	updatedThread = threadResults[0];
-		    const users = threadResults[0]['users'];
-			    users.forEach((psid) => {
-			    	promises.push(new Promise((resolve, reject) => { // new promise for each user
-				    	const userKey = datastore.key(['User', psid]);
-						datastore.get(userKey)
-						  .then((userResults) => { // got the user
-						  	accessToken = userResults[0]['access_token'];
-							var options = {
-						      url: 'https://api.spotify.com/v1/me/player/play',
-						      headers: { 'Authorization': 'Bearer ' + accessToken },
-						      body: {'uris': [uri]},
-						      json: true
-						    };
-						    request.put(options, function (error, response, body){
-						    	//SENT
-						    	console.log('response.statusCode: ', response.statusCode);
-						    	console.log('response.statusCode: ', response.statusMessage);
-						    	if (response.statusCode == 401){ // invalid token must renew
-						    		res.send(response.statusCode)
-						    		reject();
-						    	}
-						    	resolve("now playing");
-						    });
+		.then((threadResults) => {
+			updatedThread = threadResults[0];
+			const users = threadResults[0]['users'];
+			users.forEach((psid) => {
+				console.log('new promise');
+				promises.push(new Promise((resolve, reject) => { // new promise for each user
+			    	const userKey = datastore.key(['User', psid]);
+					datastore.get(userKey)
+					.then((userResults) => { // got the user
+					  	return playSongForUser(uri, psid, userResults[0]);
+				  	}).then(function(){
+				  		resolve();
+				  	});
+			  	}));	
+			})
+			// all requests are ready to be sent back
+			Promise.all(promises)
+			.then((results) => {
+				// update tid with current song, current time, and song length
+				console.log('all promises: ', promises);
 
-					  	})
-				  	}));	
-			   	})
-				// all requests are ready to be sent back
-				Promise.all(promises)
-				.then((results) => {
-					// update tid with current song, current time, and song length
-					updatedThread['now_playing'] = {
-						uri: uri,
-						duration: duration,
-						start: Date.now(),
-						id: id,
-						image: image,
-						artist: artist,
-						name: name
-					};
-					const entity = {
-					  key: threadKey,
-					  data: updatedThread
-					};
-					datastore.upsert(entity)
-					  .then(() => {
-					  	// check if actually playing 
-						var options = {
-					      url: 'https://api.spotify.com/v1/me/player/currently-playing',
-					 	  headers: { 
-					 	  	'Authorization': 'Bearer ' + accessToken,
-					 	  	'Accept': 'application/json',
-					 	  	'Content-Type': 'application/json'
-					 	  }
-					    };
-					    request.get(options, function (error, response, body){
-
-					    	// check if spotify is open
-	    					if (response.statusCode == 200){
-		    					var userIsPlaying = JSON.parse(body)['is_playing'];
-		    					if (userIsPlaying == true) { // success
-									res.send(200, {now_playing: updatedThread['now_playing']});
-		    					} else {
-									res.send(500);
-		    					}
-	    					} else {
-								res.send(204);
-	    					}
-					    });
-					  });
-
-				})
-				.catch(next)
-			});
-
-		    
+				updatedThread['now_playing'] = {
+					uri: uri,
+					duration: duration,
+					start: Date.now(),
+					id: id,
+					image: image,
+					artist: artist,
+					name: name
+				};
+				const entity = {
+				  key: threadKey,
+				  data: updatedThread
+				};
+				datastore.upsert(entity) // update thread
+				checkCurrentlyPlaying(originPSID, updatedThread)
+				.then((statusCode) => {
+					res.send(statusCode);
+				});
+			})
+			.catch(next)
+		});
 	});
 
 	router.post('/join', function (req, res, next){
@@ -130,51 +191,16 @@ module.exports = function (router) {
 
 
 		  	if (offset < duration) {
-  				var options = {
-			      url: 'https://api.spotify.com/v1/me/player/play',
-			      headers: { 'Authorization': 'Bearer ' + accessToken },
-			      body: {
-			      	"uris": [uri]
-			      },
-			      json: true
-			    };
-			    request.put(options, function (error, response, body){
-			    	console.log('response.statusCode: ', response.statusCode)
-	    			if (response.statusCode == 401){ // invalid token must renew
-	    				console.log('invalid token');
-			    		res.send(401);
-			    	} else {
 
-				    	var options = {
-					      url: 'https://api.spotify.com/v1/me/player/currently-playing',
-					 	  headers: { 
-					 	  	'Authorization': 'Bearer ' + accessToken,
-					 	  	'Accept': 'application/json',
-					 	  	'Content-Type': 'application/json'
-					 	  }
-					    };
-					    request.get(options, function (error, response, body){
-					    	// check if spotify is open
-	    					if (response.statusCode == 200){
-		    					var userIsPlaying = JSON.parse(body)['is_playing'];
-			    				if (userIsPlaying == true) { // success
-			    					var seekOptions = {
-								      url: 'https://api.spotify.com/v1/me/player/seek?position_ms=' + offset,
-								      headers: { 'Authorization': 'Bearer ' + accessToken }
-								    };
-						    		request.put(seekOptions, function (error, response, body){
-					    				console.log('JOINED');
-										res.send(200, {now_playing: nowPlaying});
-						    		});
-		    					} else {
-									res.send(500);
-		    					}
-	    					} else {
-								res.send(204);
-	    					}
-					    });
-				  	}
-			    });
+				// var seekOptions = {
+			 //      url: 'https://api.spotify.com/v1/me/player/seek?position_ms=' + offset,
+			 //      headers: { 'Authorization': 'Bearer ' + accessToken }
+			 //    };
+	   //  		request.put(seekOptions, function (error, response, body){
+    // 				console.log('JOINED');
+				// 	res.send(200, {now_playing: nowPlaying});
+	   //  		});
+		    					
 		  	}
 		  	next();
 		});
@@ -289,57 +315,11 @@ module.exports = function (router) {
 	router.post('/refresh', function(req, res, next){
 		var refreshToken = JSON.parse(req.body)['refresh_token'];
 		var psid = JSON.parse(req.body)['psid'];
+		renewToken(psid, refreshToken)
+		.then((accessToken)=>{
+		    res.send(200, {access_token: accessToken});
+		});
 
-		// get new token from spotify
-		var options = {
-	      url: 'https://accounts.spotify.com/api/token',
-	 	  headers: { 'Authorization': 'Basic ' + (new Buffer(client_id + ':' + client_secret).toString('base64'))},
-	      form: {
-	      	grant_type: 'refresh_token',
-	      	refresh_token: refreshToken
-	 		}
-	    };
-	    request.post(options, function (error, response, body){
-	    	// REFRESHED now get the user's old details
-	    	var accessToken = JSON.parse(body)['access_token'];
-
-			const userKey = datastore.key(['User', psid]);
-
-			const query = datastore.createQuery('User')
-			  .filter('__key__ ', '=', userKey)
-			  .limit(1);
-
-			datastore.runQuery(query)
-			  .then((results) => {
-			    // Task entities found.
-			    const user = results[0][0];
-
-			    if (user != null) {
-			    	const refreshedUser = {
-						access_token: accessToken,
-						refresh_token: refreshToken,
-						tid: user.tid
-					};
-
-					const userKey = datastore.key(['User', psid]);
-
-					const entity = {
-						key: userKey,
-						data: refreshedUser
-					}
-
-					datastore.update(entity)
-					  .then(() => {
-					    // Task inserted successfully.
-					    console.log('refreshed');
-					    res.send(200, {access_token: accessToken});
-				    });
-			    } else {
-			    	res.status(404);
-			    	res.send({message: "user not found"});
-			    }
-	    	});
-	    });
 	    next();
 	});
 
