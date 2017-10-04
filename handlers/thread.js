@@ -51,21 +51,21 @@ function renewToken(psid, refreshToken){
     return promise;
 }
 
-function playSongForUser(uri, psid, user) {
+function playSongForUser(uri, psid, accessToken, refreshToken) {
 	console.log('playSongForUser');
 	var options = {
       url: 'https://api.spotify.com/v1/me/player/play',
-      headers: { 'Authorization': 'Bearer ' + user["access_token"] },
+      headers: { 'Authorization': 'Bearer ' + accessToken },
       body: {'uris': [uri]},
       json: true
     };
 	return request.put(options, function (error, response, body){
     	if (response.statusCode == 401){ // invalid token must renew
-    		renewToken(psid, user["refresh_token"])
+    		renewToken(psid, refreshToken)
     		.then(function(newAccessToken){
     			console.log("playing again with ", newAccessToken)
     			user["access_token"] = newAccessToken;
-	            return playSongForUser(uri, psid, user);
+	            return playSongForUser(uri, psid, newAccessToken, refreshToken);
 	    	});
     	} else {
     		return response.statusCode;
@@ -132,7 +132,7 @@ module.exports = function (router) {
 			    	const userKey = datastore.key(['User', psid]);
 					datastore.get(userKey)
 					.then((userResults) => { // got the user
-					  	return playSongForUser(uri, psid, userResults[0]);
+					  	return playSongForUser(uri, psid, userResults[0]["access_token"], userResults[0]["refresh_token"]);
 				  	}).then(function(){
 				  		resolve();
 				  	});
@@ -171,7 +171,9 @@ module.exports = function (router) {
 		console.log('/join');
 		var tid = JSON.parse(req.body)['tid'];
 		var psid = JSON.parse(req.body)['psid'];
-		var accessToken = JSON.parse(req.body)['accessToken'];
+		var accessToken = JSON.parse(req.body)['access_token'];
+		var refreshToken = JSON.parse(req.body)['refresh_token'];
+
 		console.log('body: ', JSON.parse(req.body));
 
     	const threadKey = datastore.key(['Thread', tid]);
@@ -191,15 +193,25 @@ module.exports = function (router) {
 
 
 		  	if (offset < duration) {
+		  		// play song for user
+		  		// check if playing. if not, send response
+		  		// if it is playing, seek to offset.
 
-				// var seekOptions = {
-			 //      url: 'https://api.spotify.com/v1/me/player/seek?position_ms=' + offset,
-			 //      headers: { 'Authorization': 'Bearer ' + accessToken }
-			 //    };
-	   //  		request.put(seekOptions, function (error, response, body){
-    // 				console.log('JOINED');
-				// 	res.send(200, {now_playing: nowPlaying});
-	   //  		});
+
+				new Promise((resolve, reject) => {
+					playSongForUser(uri, psid, accessToken, refreshToken);
+					resolve();
+				}).then(function(){
+					console.log("offset: ", offset);
+					var seekOptions = {
+				      url: 'https://api.spotify.com/v1/me/player/seek?position_ms=' + offset,
+				      headers: { 'Authorization': 'Bearer ' + accessToken }
+				    };
+		    		request.put(seekOptions, function (error, response, body){
+	    				console.log('JOINED');
+						res.send(200, {now_playing: nowPlaying});
+		    		});
+				});
 		    					
 		  	}
 		  	next();
