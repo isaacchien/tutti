@@ -134,6 +134,7 @@ module.exports = function (router) {
 					.then((userResults) => { // got the user
 					  	return playSongForUser(uri, psid, userResults[0]["access_token"], userResults[0]["refresh_token"]);
 				  	}).then(function(){
+				  		console.log('resolve play');
 				  		resolve();
 				  	});
 			  	}));	
@@ -186,8 +187,6 @@ module.exports = function (router) {
 
 		  	console.log(Date.now());
 		  	var offset = (Date.now()) - start;
-		  	console.log('offset: ', offset);
-		  	console.log('d: ', duration);
 
 		  	console.log('offset < duration: ', (offset < duration));
 
@@ -197,20 +196,23 @@ module.exports = function (router) {
 		  		// check if playing. if not, send response
 		  		// if it is playing, seek to offset.
 
-
-				new Promise((resolve, reject) => {
-					playSongForUser(uri, psid, accessToken, refreshToken);
-					resolve();
+				var promise = new Promise((resolve, reject) => {
+					return resolve(playSongForUser(uri, psid, accessToken, refreshToken));
 				}).then(function(){
-					console.log("offset: ", offset);
-					var seekOptions = {
-				      url: 'https://api.spotify.com/v1/me/player/seek?position_ms=' + offset,
-				      headers: { 'Authorization': 'Bearer ' + accessToken }
-				    };
-		    		request.put(seekOptions, function (error, response, body){
-	    				console.log('JOINED');
-						res.send(200, {now_playing: nowPlaying});
-		    		});
+					setTimeout(function(){
+						console.log("seek offset: ", offset);
+						var seekOptions = {
+					      url: 'https://api.spotify.com/v1/me/player/seek?position_ms=' + offset,
+					      headers: { 'Authorization': 'Bearer ' + accessToken }
+					    };
+			    		request.put(seekOptions, function (error, response, body){
+		    				console.log('SEEKED');
+		    				if (error){
+		    					console.log("ERROR: ", error)
+		    				}
+							res.send(200, {now_playing: nowPlaying});
+			    		});
+					}, 300)
 				});
 		    					
 		  	}
