@@ -8,8 +8,7 @@ Cloud   Datastore).
 
 [Watch the Demo Video](https://youtu.be/Wn03N4eRnc8)
 
-Client Repo: https://github.com/isaacchien/tutti-client
-
+[Check out the Client Repo](https://github.com/isaacchien/tutti-client)
 ## Getting Started
 
 New Users
