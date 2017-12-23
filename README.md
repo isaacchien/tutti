@@ -6,7 +6,7 @@ Tutti   —    Messenger   extension   for   social   music   listening    (2017
 * Designed   and   developed   the   client-side   single   page   app   (React)   and   API   server   (Node.js,   Google
 Cloud   Datastore).
 
-[video demo](https://youtu.be/Wn03N4eRnc8)
+[Watch the Demo Video](https://youtu.be/Wn03N4eRnc8)
 
 Client Repo: https://github.com/isaacchien/tutti-client
 
