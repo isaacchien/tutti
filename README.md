@@ -14,11 +14,10 @@ Check out the Client Repo: https://github.com/isaacchien/tutti-client
 
 New Users
 1. Send a message to @listentutti (https://www.facebook.com/listentutti)
-2. Click "Get Started" in chat
-3. Click "Search and Share"
-4. New users will be prompted to "Login with Spotify"
-5. Now you can see your own library, search for songs, and share sessions with your friends. 
-6. Tutti will now be saved in Messenger's Composer Drawer so you can easily access it in any chat.  
+2. Click "Search and Share"
+3. New users will be prompted to "Login with Spotify"
+4. Now you can see your own library, search for songs, and share sessions with your friends. 
+5. Tutti will now be saved in Messenger's Composer Drawer so you can easily access it in any chat.  
 
 Existing Users
 1. Open Tutti from the Composer Drawer (the + sign) in a Messenger chat thread
