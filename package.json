@@ -10,6 +10,7 @@
   "license": "ISC",
   "dependencies": {
     "@google-cloud/datastore": "^1.0.2",
+    "config": "^1.29.0",
     "restify": "^4.3.1",
     "restify-cors-middleware": "^1.0.1"
   }

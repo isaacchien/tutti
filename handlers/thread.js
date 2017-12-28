@@ -3,18 +3,16 @@
 
 let datastore = require('../lib/datastore');
 var request = require('request');
+var config = require('config');
 
-var client_id = '37c50fb2e74848a6841ddea2b1e195f2';
-var client_secret = '397cd71cbb2d45f7a9c7b848e162f706';
+var client_id = config.get('Client.id');
+var client_secret = config.get('Client.secret');
 
 
-function hello (){
-	console.log('hi')
-}
 function renewToken(psid, refreshToken){
 	console.log('renewToken');
 	var options = {
-      url: 'https://accounts.spotify.com/api/token',
+      url: config.get('Spotify.token'),
  	  headers: { 'Authorization': 'Basic ' + (new Buffer(client_id + ':' + client_secret).toString('base64'))},
       form: {
       	grant_type: 'refresh_token',
@@ -54,7 +52,7 @@ function renewToken(psid, refreshToken){
 function playSongForUser(uri, psid, accessToken, refreshToken) {
 	console.log('playSongForUser');
 	var options = {
-      url: 'https://api.spotify.com/v1/me/player/play',
+      url: config.get('Spotify.play'),
       headers: { 'Authorization': 'Bearer ' + accessToken },
       body: {'uris': [uri]},
       json: true
@@ -87,7 +85,7 @@ function checkCurrentlyPlaying(originPSID, updatedThread){
 			const user = results[0][0];
 			var accessToken = user["access_token"];
 			var options = {
-			  url: 'https://api.spotify.com/v1/me/player/currently-playing',
+			  url: config.get('Spotify.currentlyPlaying'),
 				  headers: { 
 				  	'Authorization': 'Bearer ' + accessToken,
 				  	'Accept': 'application/json',
@@ -202,7 +200,7 @@ module.exports = function (router) {
 					setTimeout(function(){
 						console.log("seek offset: ", offset);
 						var seekOptions = {
-					      url: 'https://api.spotify.com/v1/me/player/seek?position_ms=' + offset,
+					      url: config.get('Spotify.seek')+ offset,
 					      headers: { 'Authorization': 'Bearer ' + accessToken }
 					    };
 			    		request.put(seekOptions, function (error, response, body){
@@ -266,35 +264,6 @@ module.exports = function (router) {
 		next();
 	});
 
-	router.post('/thread/:tid', function (req, res, next) {
-		// The kind for the new entity
-		const kind = 'Thread';
-		// The name/ID for the new entity
-		const name = req.params['tid'];
-		// The Cloud Datastore key for the new entity
-		const threadKey = datastore.key([kind, name]);
-
-		// Prepares the new entity
-		const thread = {
-		  key: threadKey,
-		  data: {
-		    spotifyToken: 'hereisatoken234',
-		    psid: req.body['psid']
-		  }
-		};
-
-		// Saves the entity
-		datastore.save(thread)
-		  .then(() => {
-		    res.send('hi');
-		  })
-		  .catch((err) => {
-		    console.error('ERROR:', err);
-		  });
-		next();
-
-	});
-
 	router.get('/threads', function (req, res, next) {
 		console.log('get all threads');
 		const query = datastore.createQuery('Thread');		
@@ -337,7 +306,6 @@ module.exports = function (router) {
 	    next();
 	});
 
-
 	// gets the token and then stores user to db
 	router.post('/callback', function (req, res, next){
 
@@ -347,7 +315,7 @@ module.exports = function (router) {
 		var tid = JSON.parse(req.body)['tid'];
 		// get tokens from spotify
 		var options = {
-	      url: 'https://accounts.spotify.com/api/token',
+	      url: config.get('Spotify.token'),
 	 	  headers: { 'Authorization': 'Basic ' + (new Buffer(client_id + ':' + client_secret).toString('base64'))},
 	      form: {
 	      	grant_type: 'authorization_code',

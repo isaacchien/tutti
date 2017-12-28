@@ -1,0 +1,12 @@
+{
+  "Client": {
+    "id": "37c50fb2e74848a6841ddea2b1e195f2",
+    "secret": "397cd71cbb2d45f7a9c7b848e162f706"
+  },
+  "Spotify": {
+    "token": "https://accounts.spotify.com/api/token",
+    "play": "https://api.spotify.com/v1/me/player/play",
+    "currentlyPlaying": "https://api.spotify.com/v1/me/player/currently-playing",
+    "seek": "https://api.spotify.com/v1/me/player/seek?position_ms"
+  }
+}
