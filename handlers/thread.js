@@ -7,10 +7,13 @@ var config = require('config');
 
 var client_id = config.get('Client.id');
 var client_secret = config.get('Client.secret');
+var bunyan = require('bunyan');
+
+
+var log = bunyan.createLogger({name: 'tutti'});
 
 
 function renewToken(psid, refreshToken){
-	console.log('renewToken');
 	var options = {
       url: config.get('Spotify.token'),
  	  headers: { 'Authorization': 'Basic ' + (new Buffer(client_id + ':' + client_secret).toString('base64'))},
@@ -40,7 +43,6 @@ function renewToken(psid, refreshToken){
 			datastore.update(entity)
 			  .then(() => {
 			    // Task inserted successfully.
-			    console.log('refreshed');
 			    resolve(accessToken);
 		    });
 	    });
@@ -50,7 +52,6 @@ function renewToken(psid, refreshToken){
 }
 
 function playSongForUser(uri, psid, accessToken, refreshToken) {
-	console.log('playSongForUser');
 	var options = {
       url: config.get('Spotify.play'),
       headers: { 'Authorization': 'Bearer ' + accessToken },
@@ -61,7 +62,6 @@ function playSongForUser(uri, psid, accessToken, refreshToken) {
     	if (response.statusCode == 401){ // invalid token must renew
     		renewToken(psid, refreshToken)
     		.then(function(newAccessToken){
-    			console.log("playing again with ", newAccessToken)
     			user["access_token"] = newAccessToken;
 	            return playSongForUser(uri, psid, newAccessToken, refreshToken);
 	    	});
@@ -72,7 +72,6 @@ function playSongForUser(uri, psid, accessToken, refreshToken) {
 }
 
 function checkCurrentlyPlaying(originPSID, updatedThread){
-	console.log('check if playing');
 	const userKey = datastore.key(['User', originPSID]);
 	const query = datastore.createQuery('User')
 	  .filter('__key__ ', '=', userKey)
@@ -94,7 +93,6 @@ function checkCurrentlyPlaying(originPSID, updatedThread){
 			};
 			request.get(options, function (error, response, body){
 				// check if spotify is open
-				console.log('response: ', response.statusCode);
 				resolve(response.statusCode);
 			});
 		});
@@ -125,14 +123,12 @@ module.exports = function (router) {
 			updatedThread = threadResults[0];
 			const users = threadResults[0]['users'];
 			users.forEach((psid) => {
-				console.log('new promise');
 				promises.push(new Promise((resolve, reject) => { // new promise for each user
 			    	const userKey = datastore.key(['User', psid]);
 					datastore.get(userKey)
 					.then((userResults) => { // got the user
 					  	return playSongForUser(uri, psid, userResults[0]["access_token"], userResults[0]["refresh_token"]);
 				  	}).then(function(){
-				  		console.log('resolve play');
 				  		resolve();
 				  	});
 			  	}));	
@@ -141,8 +137,6 @@ module.exports = function (router) {
 			Promise.all(promises)
 			.then((results) => {
 				// update tid with current song, current time, and song length
-				console.log('all promises: ', promises);
-
 				updatedThread['now_playing'] = {
 					uri: uri,
 					duration: duration,
@@ -167,13 +161,11 @@ module.exports = function (router) {
 	});
 
 	router.post('/join', function (req, res, next){
-		console.log('/join');
 		var tid = JSON.parse(req.body)['tid'];
 		var psid = JSON.parse(req.body)['psid'];
 		var accessToken = JSON.parse(req.body)['access_token'];
 		var refreshToken = JSON.parse(req.body)['refresh_token'];
 
-		console.log('body: ', JSON.parse(req.body));
 
     	const threadKey = datastore.key(['Thread', tid]);
 		datastore.get(threadKey)
@@ -183,11 +175,7 @@ module.exports = function (router) {
 		  	var duration = nowPlaying['duration'];
 		  	var uri = nowPlaying['uri'];
 
-		  	console.log(Date.now());
 		  	var offset = (Date.now()) - start;
-
-		  	console.log('offset < duration: ', (offset < duration));
-
 
 		  	if (offset < duration) {
 		  		// play song for user
@@ -198,15 +186,12 @@ module.exports = function (router) {
 					return resolve(playSongForUser(uri, psid, accessToken, refreshToken));
 				}).then(function(){
 					setTimeout(function(){
-						console.log("seek offset: ", offset);
 						var seekOptions = {
 					      url: config.get('Spotify.seek')+ offset,
 					      headers: { 'Authorization': 'Bearer ' + accessToken }
 					    };
 			    		request.put(seekOptions, function (error, response, body){
-		    				console.log('SEEKED');
 		    				if (error){
-		    					console.log("ERROR: ", error)
 		    				}
 							res.send(200, {now_playing: nowPlaying});
 			    		});
@@ -225,21 +210,16 @@ module.exports = function (router) {
 
 	router.get('/nowplaying/:tid', function(req, res, next){
 		var tid = req.params['tid'];
-		console.log('/nowplaying');
     	const threadKey = datastore.key(['Thread', tid]);
-    	console.log('threadKey: ', threadKey);
 		datastore.get(threadKey)
 		  .then((threadResults) => {
-		  	console.log('threadResults: ', threadResults);
 			var nowPlaying = threadResults[0]['now_playing'];
-			console.log('nowPlaying: ', nowPlaying);
 			res.send(200, {now_playing: nowPlaying});
 		  });
 		next();
 	});
 
 	router.get('/user/:psid', function(req, res, next){
-		console.log('/user');
 		var psid = req.params['psid'];
 
 		const userKey = datastore.key(['User', psid]);
@@ -253,11 +233,9 @@ module.exports = function (router) {
 		    const user = results[0][0];
 		    if (user != null) {
 				res.send(200,user);
-				console.log('found user');
 		    } else {
 		    	res.status(404)
 		    	res.send({message: "user not found"});
-		    	console.log('user not found');
 		    }
 
 		  });
@@ -265,30 +243,13 @@ module.exports = function (router) {
 	});
 
 	router.get('/threads', function (req, res, next) {
-		console.log('get all threads');
 		const query = datastore.createQuery('Thread');		
 		datastore.runQuery(query)
 		  .then((results) => {
 		    // Task entities found.
 		    const threads = results[0];
 
-		    threads.forEach((thread) => console.log(thread));
-		    res.send(threads);
-		  });
-		next();
-	});
-
-	router.get('/thread/:tid', function (req, res, next) {
-		console.log('get threads with id');
-		var tid = req.params['tid'];
-		const query = datastore.createQuery('Thread')
-			.filter('__key__', '=', datastore.key(['Thread', tid]));		
-		datastore.runQuery(query)
-		  .then((results) => {
-		    // Task entities found.
-		    const threads = results[0];
-
-		    threads.forEach((thread) => console.log(thread));
+		    log.info(threads)
 		    res.send(threads);
 		  });
 		next();
@@ -309,7 +270,6 @@ module.exports = function (router) {
 	// gets the token and then stores user to db
 	router.post('/callback', function (req, res, next){
 
-		console.log('callback');
 		var code = JSON.parse(req.body)['code'];
 		var psid = JSON.parse(req.body)['psid'];
 		var tid = JSON.parse(req.body)['tid'];
@@ -335,7 +295,6 @@ module.exports = function (router) {
 				datastore.get(threadKey)
 	  				.then((results) => {
 					    const thread = results[0];
-					    console.log('typeof thread: ', typeof thread);
 					    if (typeof thread == 'undefined' ) { // no thread you start the list
 					    	const threadData = {
 					    		users: [psid]
