@@ -84,7 +84,7 @@ function playSongForUser(uri, psid, accessToken, refreshToken, offset = 0) {
           return response.statusCode; // seek
         });
       };
-      return asyncDelay(delaySeek, offset, accessToken, 300);    
+      return asyncDelay(delaySeek, offset, accessToken, 200);    
     } else {
       return playStatusCode
     }
@@ -133,7 +133,7 @@ function asyncDelay(fx, offset, accessToken, delay) {
 module.exports = function (router) {
   router.post('/play', (req, res, next) => {
     // sends 200 if device is playing
-    // sends 204 if device isn't playing
+    // sends 204 if device isn't playing but is added to db
 
     let playData = null;
 
@@ -199,16 +199,20 @@ module.exports = function (router) {
 
       })
       .then((results) => {
-        playingStatusCode = results[1]
-        res.send(playingStatusCode)
+        checkStatusCode = results[1]
+        res.send(checkStatusCode)
       })
       .catch(function(error){
         log.info(error)
-        res.send
+        res.send(error, 500)
       });
   });
 
   router.post('/join', (req, res, next) => {
+    // 200 if seeked
+    // 500 first time join no thread to get
+
+
     let joinData = null;
     try {
       joinData = JSON.parse(req.body);
@@ -223,6 +227,8 @@ module.exports = function (router) {
 
 
     const threadKey = datastore.key(['Thread', tid]);
+
+
     datastore.get(threadKey)
       .then((threadResults) => {
         const nowPlaying = threadResults[0].now_playing;
@@ -233,15 +239,22 @@ module.exports = function (router) {
         const offset = (Date.now()) - start;
 
         // song is still playing
+        log.info("offset: ", offset)
+        log.info("duration: ", duration)
         if (offset < duration) {
-          // need to play song and THEN seek
-
-          return res.send("seeked", playSongForUser(uri, psid, accessToken, refreshToken, offset));
-
+          // need to play song and then check if playing
+          return playSongForUser(uri, psid, accessToken, refreshToken, offset)
+          .then((playStatusCode)=>{
+            return checkCurrentlyPlaying(psid)
+          }).then((checkStatusCode) => {
+            log.info(checkStatusCode)
+            return res.send(checkStatusCode)
+          })
+        } else {
+          // no song to queue
+          return res.send(404);
         }
-
-        return res.send('no song to queue', 300); // not modified
-      }).catch(next);
+      }).catch(next); // first time user
 
     // });
 
