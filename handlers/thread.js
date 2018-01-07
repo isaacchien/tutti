@@ -51,10 +51,9 @@ function renewToken(psid, refreshToken) {
   return promise;
 }
 
-function playSongForUser(uri, psid, accessToken, refreshToken) {
+function playSongForUser(uri, psid, accessToken, refreshToken, offset = 0) {
   // add a seek parameter
   // seek in here too
-  // should return 
 
   const options = {
     url: config.get('Spotify.play'),
@@ -62,13 +61,37 @@ function playSongForUser(uri, psid, accessToken, refreshToken) {
     body: { uris: [uri] },
     json: true,
   };
-  return request.put(options, (error, response, body) => {
-    if (response.statusCode === 401) { // invalid token must renew
-      renewToken(psid, refreshToken)
-        .then(newAccessToken => playSongForUser(uri, psid, newAccessToken, refreshToken));
+  return new Promise((resolve, reject)=>{
+    request.put(options, (error, response, body) => {
+      if (response.statusCode === 401) { // invalid token must renew
+        renewToken(psid, refreshToken)
+          .then(newAccessToken => playSongForUser(uri, psid, newAccessToken, refreshToken));
+      } else {
+        resolve(response.statusCode)
+      }
+    })
+  }).then((playStatusCode) => {
+    if (offset !== 0) {
+      const delaySeek = function (offset, accessToken) {
+        const seekOptions = {
+          url: `https://api.spotify.com/v1/me/player/seek?position_ms=${offset}`,
+          headers: { Authorization: `Bearer ${accessToken}` },
+        };
+        return request.put(seekOptions, (error, response, body) => {
+          if (error) {
+            log.info('ERROR: ', error);
+          }
+          return response.statusCode; // seek
+        });
+      };
+      return asyncDelay(delaySeek, offset, accessToken, 300);    
+    } else {
+      return playStatusCode
     }
-    return response.statusCode;
-  });
+  })
+  // seek if needed
+
+  // check if playing
 }
 
 function checkCurrentlyPlaying(originPSID) {
@@ -102,15 +125,16 @@ function checkCurrentlyPlaying(originPSID) {
 }
 
 
-function asyncDelay(fx, delay) {
+function asyncDelay(fx, offset, accessToken, delay) {
   // return a promise
-  return new Promise((resolve, reject) => {
-    setTimeout(fx, delay, resolve, reject);
-  })
+  return setTimeout(fx, delay, offset, accessToken);
 }
 
 module.exports = function (router) {
   router.post('/play', (req, res, next) => {
+    // sends 200 if device is playing
+    // sends 204 if device isn't playing
+
     let playData = null;
 
     try {
@@ -141,22 +165,14 @@ module.exports = function (router) {
         let promises = users.map((psid) => {
           const userKey = datastore.key(['User', psid]);
           return datastore.get(userKey)
-            // .then((userResults) => {
-
-            //   const accessToken = userResults[0].access_token;
-            //   const refreshToken = userResults[0].refresh_token;
-            //   return playSongForUser(uri, psid, accessToken, refreshToken);
-            // });
+            .then((userResults) => {
+              const accessToken = userResults[0].access_token;
+              const refreshToken = userResults[0].refresh_token;
+              return playSongForUser(uri, psid, accessToken, refreshToken);
+            });
         });
         // all requests are ready to be sent back
         return Promise.all(promises)
-      })
-      .then((results) => {
-        return Promise.all(results.map((result) => {
-          const accessToken = result[0].access_token;
-          const refreshToken = result[0].refresh_token;
-          return playSongForUser(uri, result[0].psid, accessToken, refreshToken);
-        }))
       })
       .then(() => {
         // update tid with current song, current time, and song length
@@ -178,15 +194,17 @@ module.exports = function (router) {
 
         return Promise.all([
           datastore.upsert(entity),
-          checkCurrentlyPlaying(originPSID) // MOVE TO PLAY SONG FOR USER AND ADD DELAY
+          checkCurrentlyPlaying(originPSID) // ADD DELAY
         ])
 
       })
       .then((results) => {
-
+        playingStatusCode = results[1]
+        res.send(playingStatusCode)
       })
       .catch(function(error){
         log.info(error)
+        res.send
       });
   });
 
@@ -218,31 +236,12 @@ module.exports = function (router) {
         if (offset < duration) {
           // need to play song and THEN seek
 
-          playSongForUser(uri, psid, accessToken, refreshToken)
-          .then(() => {
+          return res.send("seeked", playSongForUser(uri, psid, accessToken, refreshToken, offset));
 
-
-            return asyncDelay((resolve, reject) => {
-              const seekOptions = {
-                url: `https://api.spotify.com/v1/me/player/seek?position_ms=${offset}`,
-                headers: { Authorization: `Bearer ${accessToken}` },
-              };
-              request.put(seekOptions, (error, response, body) => {
-                if (error) {
-                  return reject(error)
-                }
-                resolve(response.statusCode);
-              });
-            }, 300);
-          });
         }
 
         return res.send('no song to queue', 300); // not modified
-      })
-      .then((statusCode)=>{
-        res.send(200)
-      })
-      .catch(next);
+      }).catch(next);
 
     // });
 
