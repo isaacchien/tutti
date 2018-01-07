@@ -1,367 +1,404 @@
-'use strict';
+const datastore = require('../lib/datastore');
+const request = require('request');
+const config = require('config');
+
+const clientID = config.get('Client.id');
+const clientSecret = config.get('Client.secret');
+const bunyan = require('bunyan');
 
 
-let datastore = require('../lib/datastore');
-var request = require('request');
-var config = require('config');
-
-var client_id = config.get('Client.id');
-var client_secret = config.get('Client.secret');
-var bunyan = require('bunyan');
+const log = bunyan.createLogger({ name: 'tutti' });
 
 
-var log = bunyan.createLogger({name: 'tutti'});
+function renewToken(psid, refreshToken) {
+  log.info(renewToken);
+  const options = {
+    url: config.get('Spotify.token'),
+    headers: { Authorization: `Basic ${Buffer.from(`${clientID}:${clientSecret}`).toString('base64')}` },
+    form: {
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    },
+  };
+  const promise = new Promise(((resolve, reject) => {
+    request.post(options, (error, response, body) => {
+      if (error) {
+        return reject(error)
+      }
 
+      // REFRESHED now get the user's old details
+      const accessToken = JSON.parse(body).access_token;
 
-function renewToken(psid, refreshToken){
-	var options = {
-      url: config.get('Spotify.token'),
- 	  headers: { 'Authorization': 'Basic ' + (new Buffer(client_id + ':' + client_secret).toString('base64'))},
-      form: {
-      	grant_type: 'refresh_token',
-      	refresh_token: refreshToken
- 		}
-    };
-    var promise = new Promise(function (resolve, reject){
-    	
-	    request.post(options, function (error, response, body){
-	    	// REFRESHED now get the user's old details
-	    	var accessToken = JSON.parse(body)['access_token'];
+      const refreshedUser = {
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      };
 
-	    	const refreshedUser = {
-				access_token: accessToken,
-				refresh_token: refreshToken
-			};
+      const userKey = datastore.key(['User', psid]);
 
-			const userKey = datastore.key(['User', psid]);
+      const entity = {
+        key: userKey,
+        data: refreshedUser,
+      };
 
-			const entity = {
-				key: userKey,
-				data: refreshedUser
-			}
-
-			datastore.update(entity)
-			  .then(() => {
-			    // Task inserted successfully.
-			    resolve(accessToken);
-		    });
-	    });
-
-    })
-    return promise;
+      datastore.update(entity)
+        .then(() => {
+          // Task inserted successfully.
+          resolve(accessToken);
+        });
+    });
+  }));
+  return promise;
 }
 
 function playSongForUser(uri, psid, accessToken, refreshToken) {
-	var options = {
-      url: config.get('Spotify.play'),
-      headers: { 'Authorization': 'Bearer ' + accessToken },
-      body: {'uris': [uri]},
-      json: true
-    };
-	return request.put(options, function (error, response, body){
-    	if (response.statusCode == 401){ // invalid token must renew
-    		renewToken(psid, refreshToken)
-    		.then(function(newAccessToken){
-    			user["access_token"] = newAccessToken;
-	            return playSongForUser(uri, psid, newAccessToken, refreshToken);
-	    	});
-    	} else {
-    		return response.statusCode;
-    	}
-	});
+  // add a seek parameter
+  // seek in here too
+  // should return 
+
+  const options = {
+    url: config.get('Spotify.play'),
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: { uris: [uri] },
+    json: true,
+  };
+  return request.put(options, (error, response, body) => {
+    if (response.statusCode === 401) { // invalid token must renew
+      renewToken(psid, refreshToken)
+        .then(newAccessToken => playSongForUser(uri, psid, newAccessToken, refreshToken));
+    }
+    return response.statusCode;
+  });
 }
 
-function checkCurrentlyPlaying(originPSID, updatedThread){
-	const userKey = datastore.key(['User', originPSID]);
-	const query = datastore.createQuery('User')
-	  .filter('__key__ ', '=', userKey)
-	  .limit(1);
-	
-	var promise = new Promise(function (resolve, reject){
-		datastore.runQuery(query)
-		.then((results) => {
-			// Task entities found.
-			const user = results[0][0];
-			var accessToken = user["access_token"];
-			var options = {
-			  url: config.get('Spotify.currentlyPlaying'),
-				  headers: { 
-				  	'Authorization': 'Bearer ' + accessToken,
-				  	'Accept': 'application/json',
-				  	'Content-Type': 'application/json'
-				  }
-			};
-			request.get(options, function (error, response, body){
-				// check if spotify is open
-				resolve(response.statusCode);
-			});
-		});
-	});
-	return promise;
+function checkCurrentlyPlaying(originPSID) {
+  const userKey = datastore.key(['User', originPSID]);
+  const query = datastore.createQuery('User')
+    .filter('__key__ ', '=', userKey)
+    .limit(1);
+
+
+  const promise = new Promise(((resolve, reject) => {
+    datastore.runQuery(query)
+      .then((results) => {
+        // Task entities found.
+        const user = results[0][0];
+        const accessToken = user.access_token;
+        const options = {
+          url: config.get('Spotify.currentlyPlaying'),
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+        };
+        request.get(options, (error, response, body) => {
+          // check if spotify is open
+          resolve(response.statusCode);
+        });
+      });
+  }));
+  return promise;
+}
+
+
+function asyncDelay(fx, delay) {
+  // return a promise
+  return new Promise((resolve, reject) => {
+    setTimeout(fx, delay, resolve, reject);
+  })
 }
 
 module.exports = function (router) {
+  router.post('/play', (req, res, next) => {
+    let playData = null;
 
-	router.post('/play', function (req, res, next) {
-		var originPSID = JSON.parse(req.body)['psid'];
-		var tid = JSON.parse(req.body)['tid'];
-		var duration = JSON.parse(req.body)['duration'];
-		var uri = JSON.parse(req.body)['uri'];
-		var id = JSON.parse(req.body)['id'];
-		var image = JSON.parse(req.body)['image'];
-		var artist = JSON.parse(req.body)['artist'];
-		var name = JSON.parse(req.body)['name'];
-		// get user IDs
+    try {
+      playData = JSON.parse(req.body);
+    } catch (e) {
+      playData = req.body;
+    }
 
-		var promises = [];
-
-		var updatedThread;
-
-    	const threadKey = datastore.key(['Thread', tid]);
-		datastore.get(threadKey)
-		.then((threadResults) => {
-			updatedThread = threadResults[0];
-			const users = threadResults[0]['users'];
-			users.forEach((psid) => {
-				promises.push(new Promise((resolve, reject) => { // new promise for each user
-			    	const userKey = datastore.key(['User', psid]);
-					datastore.get(userKey)
-					.then((userResults) => { // got the user
-					  	return playSongForUser(uri, psid, userResults[0]["access_token"], userResults[0]["refresh_token"]);
-				  	}).then(function(){
-				  		resolve();
-				  	});
-			  	}));	
-			})
-			// all requests are ready to be sent back
-			Promise.all(promises)
-			.then((results) => {
-				// update tid with current song, current time, and song length
-				updatedThread['now_playing'] = {
-					uri: uri,
-					duration: duration,
-					start: Date.now(),
-					id: id,
-					image: image,
-					artist: artist,
-					name: name
-				};
-				const entity = {
-				  key: threadKey,
-				  data: updatedThread
-				};
-				datastore.upsert(entity) // update thread
-				checkCurrentlyPlaying(originPSID, updatedThread)
-				.then((statusCode) => {
-					res.send(statusCode);
-				});
-			})
-			.catch(next)
-		});
-	});
-
-	router.post('/join', function (req, res, next){
-		var tid = JSON.parse(req.body)['tid'];
-		var psid = JSON.parse(req.body)['psid'];
-		var accessToken = JSON.parse(req.body)['access_token'];
-		var refreshToken = JSON.parse(req.body)['refresh_token'];
+    const originPSID = String(playData.psid);
+    const tid = String(playData.tid);
+    const duration = playData.duration;
+    const uri = playData.uri;
+    const id = playData.id;
+    const image = playData.image;
+    const artist = playData.artist;
+    const name = playData.name;
+    // get user IDs
 
 
-    	const threadKey = datastore.key(['Thread', tid]);
-		datastore.get(threadKey)
-		  .then((threadResults) => {
-		  	var nowPlaying = threadResults[0]['now_playing'];
-		  	var start = nowPlaying['start'];
-		  	var duration = nowPlaying['duration'];
-		  	var uri = nowPlaying['uri'];
+    let updatedThread;
 
-		  	var offset = (Date.now()) - start;
+    const threadKey = datastore.key(['Thread', tid]);
 
-		  	if (offset < duration) {
-		  		// play song for user
-		  		// check if playing. if not, send response
-		  		// if it is playing, seek to offset.
+    datastore.get(threadKey)
+      .then((threadResults) => {
+        updatedThread = threadResults[0];
+        const users = threadResults[0].users;
+        let promises = users.map((psid) => {
+          const userKey = datastore.key(['User', psid]);
+          return datastore.get(userKey)
+            // .then((userResults) => {
 
-				var promise = new Promise((resolve, reject) => {
-					return resolve(playSongForUser(uri, psid, accessToken, refreshToken));
-				}).then(function(){
-					setTimeout(function(){
-						var seekOptions = {
-					      url: config.get('Spotify.seek')+ offset,
-					      headers: { 'Authorization': 'Bearer ' + accessToken }
-					    };
-			    		request.put(seekOptions, function (error, response, body){
-		    				if (error){
-		    				}
-							res.send(200, {now_playing: nowPlaying});
-			    		});
-					}, 300)
-				});
-		    					
-		  	}
-		  	next();
-		});
-
-	    // });
-
-		// if it's not the user's current song
-		// make user play thread's song
-	});
-
-	router.get('/nowplaying/:tid', function(req, res, next){
-		var tid = req.params['tid'];
-    	const threadKey = datastore.key(['Thread', tid]);
-		datastore.get(threadKey)
-		  .then((threadResults) => {
-			var nowPlaying = threadResults[0]['now_playing'];
-			res.send(200, {now_playing: nowPlaying});
-		  });
-		next();
-	});
-
-	router.get('/user/:psid', function(req, res, next){
-		var psid = req.params['psid'];
-
-		const userKey = datastore.key(['User', psid]);
-
-		const query = datastore.createQuery('User')
-		  .filter('__key__ ', '=', userKey)
-		  .limit(1);
-		datastore.runQuery(query)
-		  .then((results) => {
-		    // Task entities found.
-		    const user = results[0][0];
-		    if (user != null) {
-				res.send(200,user);
-		    } else {
-		    	res.status(404)
-		    	res.send({message: "user not found"});
-		    }
-
-		  });
-		next();
-	});
-
-	router.get('/threads', function (req, res, next) {
-		const query = datastore.createQuery('Thread');		
-		datastore.runQuery(query)
-		  .then((results) => {
-		    // Task entities found.
-		    const threads = results[0];
-
-		    log.info(threads)
-		    res.send(threads);
-		  });
-		next();
-	});
+            //   const accessToken = userResults[0].access_token;
+            //   const refreshToken = userResults[0].refresh_token;
+            //   return playSongForUser(uri, psid, accessToken, refreshToken);
+            // });
+        });
+        // all requests are ready to be sent back
+        return Promise.all(promises)
+      })
+      .then((results) => {
+        return Promise.all(results.map((result) => {
+          const accessToken = result[0].access_token;
+          const refreshToken = result[0].refresh_token;
+          return playSongForUser(uri, result[0].psid, accessToken, refreshToken);
+        }))
+      })
+      .then(() => {
+        // update tid with current song, current time, and song length
+        updatedThread.now_playing = {
+          uri,
+          duration,
+          start: Date.now(),
+          id,
+          image,
+          artist,
+          name,
+        };
+        const entity = {
+          key: threadKey,
+          data: updatedThread,
+        };
+        
 
 
-	router.post('/refresh', function(req, res, next){
-		var refreshToken = JSON.parse(req.body)['refresh_token'];
-		var psid = JSON.parse(req.body)['psid'];
-		renewToken(psid, refreshToken)
-		.then((accessToken)=>{
-		    res.send(200, {access_token: accessToken});
-		});
+        return Promise.all([
+          datastore.upsert(entity),
+          checkCurrentlyPlaying(originPSID) // MOVE TO PLAY SONG FOR USER AND ADD DELAY
+        ])
 
-	    next();
-	});
+      })
+      .then((results) => {
 
-	// gets the token and then stores user to db
-	router.post('/callback', function (req, res, next){
+      })
+      .catch(function(error){
+        log.info(error)
+      });
+  });
 
-		var code = JSON.parse(req.body)['code'];
-		var psid = JSON.parse(req.body)['psid'];
-		var tid = JSON.parse(req.body)['tid'];
-		// get tokens from spotify
-		var options = {
-	      url: config.get('Spotify.token'),
-	 	  headers: { 'Authorization': 'Basic ' + (new Buffer(client_id + ':' + client_secret).toString('base64'))},
-	      form: {
-	      	grant_type: 'authorization_code',
-		    code: code,
-		    redirect_uri: 'https://river-dash.glitch.me',
-			}
-		}
+  router.post('/join', (req, res, next) => {
+    let joinData = null;
+    try {
+      joinData = JSON.parse(req.body);
+    } catch (e) {
+      joinData = req.body;
+    }
 
-	    request.post(options, function (error, response, body){
-	    	var promises = [];
-	    	//SENT
-	    	const threadKey = datastore.key(['Thread', tid]);
+    const tid = joinData.tid.toString();
+    const psid = joinData.psid.toString();
+    const accessToken = joinData.access_token;
+    const refreshToken = joinData.refresh_token;
 
-			promises.push(new Promise((resolve, rejcect) => {
-    	
-		    	// get thread 
-				datastore.get(threadKey)
-	  				.then((results) => {
-					    const thread = results[0];
-					    if (typeof thread == 'undefined' ) { // no thread you start the list
-					    	const threadData = {
-					    		users: [psid]
-					    	}
-					    	const threadEntity = {
-					    		key: threadKey,
-					    		data: threadData
-					    	}
-							datastore.upsert(threadEntity)
-					 		  .then(() => {
-					 		  	resolve('created new thread');
-							  }).catch((err) => {
-							    console.error('ERROR:', err);
-							  });
-					    } else { // update the thread
-					    	thread['users'].push(psid);
-					    	const threadData = {
-					    		users: thread['users'],
-					    		now_playing: thread['now_playing']
-					    	}
-					    	const threadEntity = {
-					    		key: threadKey,
-					    		data: threadData
-					    	}				    	
-							datastore.upsert(threadEntity)
-							  .then(() => {
-							    // Task inserted successfully.
-							    resolve('joined thread');
-							  });
-					    }
-	  				});
-	  		}));
 
-	    	var accessToken = JSON.parse(body)['access_token'];
-	    	var refreshToken = JSON.parse(body)['refresh_token'];
+    const threadKey = datastore.key(['Thread', tid]);
+    datastore.get(threadKey)
+      .then((threadResults) => {
+        const nowPlaying = threadResults[0].now_playing;
+        const start = nowPlaying.start;
+        const duration = nowPlaying.duration;
+        const uri = nowPlaying.uri;
 
-	    	// add to database
-	    	const user = {
-				access_token: accessToken,
-				refresh_token: refreshToken
-			};
+        const offset = (Date.now()) - start;
 
-			const userKey = datastore.key(['User', psid]);
+        // song is still playing
+        if (offset < duration) {
+          // need to play song and THEN seek
 
-			const entity = {
-				key: userKey,
-				data: user			
-			}
-			promises.push(new Promise((resolve, rejcect) => {
+          playSongForUser(uri, psid, accessToken, refreshToken)
+          .then(() => {
 
-				datastore.upsert(entity)
-				  .then(() => {
-				    // Task inserted successfully.
-				    resolve('inserted user');
-				  });
-			}));
 
-			Promise.all(promises)
-			.then((results) => {
-				res.send(200, {
-			    	access_token: accessToken,
-			    	refresh_token: refreshToken
-			    });		
-			})
-			.catch(next);
+            return asyncDelay((resolve, reject) => {
+              const seekOptions = {
+                url: `https://api.spotify.com/v1/me/player/seek?position_ms=${offset}`,
+                headers: { Authorization: `Bearer ${accessToken}` },
+              };
+              request.put(seekOptions, (error, response, body) => {
+                if (error) {
+                  return reject(error)
+                }
+                resolve(response.statusCode);
+              });
+            }, 300);
+          });
+        }
 
-	    next();
-	    });
-	});
-}
+        return res.send('no song to queue', 300); // not modified
+      })
+      .then((statusCode)=>{
+        res.send(200)
+      })
+      .catch(next);
+
+    // });
+
+    // if it's not the user's current song
+    // make user play thread's song
+  });
+
+  router.get('/nowplaying/:tid', (req, res, next) => {
+    const tid = req.params.tid;
+    const threadKey = datastore.key(['Thread', tid]);
+    datastore.get(threadKey)
+      .then((threadResults) => {
+        const nowPlaying = threadResults[0].now_playing;
+        res.send(200, { now_playing: nowPlaying });
+      });
+    next();
+  });
+
+  router.get('/user/:psid', (req, res, next) => {
+    const psid = req.params.psid;
+
+    const userKey = datastore.key(['User', psid]);
+
+    const query = datastore.createQuery('User')
+      .filter('__key__ ', '=', userKey)
+      .limit(1);
+    datastore.runQuery(query)
+      .then((results) => {
+        // Task entities found.
+        const user = results[0][0];
+        if (user != null) {
+          res.send(200, user);
+        } else {
+          res.status(404);
+          res.send({ message: 'user not found' });
+        }
+      });
+    next();
+  });
+
+  router.get('/threads', (req, res, next) => {
+    const query = datastore.createQuery('Thread');
+    datastore.runQuery(query)
+      .then((results) => {
+        // Task entities found.
+        const threads = results[0];
+
+        res.send(threads);
+      });
+    next();
+  });
+
+
+  router.post('/refresh', (req, res, next) => {
+    const refreshToken = JSON.parse(req.body).refresh_token;
+    const psid = JSON.parse(req.body).psid;
+    renewToken(psid, refreshToken)
+      .then((accessToken) => {
+        res.send(200, { access_token: accessToken });
+      });
+
+    next();
+  });
+
+  // gets the token and then stores user to db
+  router.post('/callback', (req, res, next) => {
+    const code = JSON.parse(req.body).code;
+    const psid = JSON.parse(req.body).psid;
+    const tid = JSON.parse(req.body).tid;
+    // get tokens from spotify
+    const options = {
+      url: config.get('Spotify.token'),
+      headers: { Authorization: `Basic ${Buffer.from(`${clientID}:${clientSecret}`).toString('base64')}` },
+      form: {
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: 'https://river-dash.glitch.me',
+      },
+    };
+
+    request.post(options, (error, response, body) => {
+      const promises = [];
+      // SENT
+      const threadKey = datastore.key(['Thread', tid]);
+
+      promises.push(new Promise((resolve, reject) => {
+        // get thread
+        datastore.get(threadKey)
+          .then((results) => {
+            const thread = results[0];
+            if (typeof thread === 'undefined') { // no thread you start the list
+              const threadData = {
+                users: [psid],
+              };
+              const threadEntity = {
+                key: threadKey,
+                data: threadData,
+              };
+              datastore.upsert(threadEntity)
+                .then(() => {
+                  resolve('created new thread');
+                }).catch((err) => {
+                  console.error('ERROR:', err);
+                });
+            } else { // update the thread
+              thread.users.push(psid);
+              const threadData = {
+                users: thread.users,
+                now_playing: thread.now_playing,
+              };
+              const threadEntity = {
+                key: threadKey,
+                data: threadData,
+              };
+              datastore.upsert(threadEntity)
+                .then(() => {
+                  // Task inserted successfully.
+                  resolve('joined thread');
+                });
+            }
+          });
+      }));
+
+      const accessToken = JSON.parse(body).access_token;
+      const refreshToken = JSON.parse(body).refresh_token;
+
+      // add to database
+      const user = {
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      };
+
+      const userKey = datastore.key(['User', psid]);
+
+      const entity = {
+        key: userKey,
+        data: user,
+      };
+      promises.push(new Promise((resolve, reject) => {
+        datastore.upsert(entity)
+          .then(() => {
+            // Task inserted successfully.
+            resolve('inserted user');
+          });
+      }));
+
+      Promise.all(promises)
+        .then(() => {
+          res.send(200, {
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+        })
+        .catch(next);
+
+      next();
+    });
+  });
+};
