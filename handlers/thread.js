@@ -262,15 +262,14 @@ module.exports = function (router) {
     // make user play thread's song
   });
 
-  router.get('/nowplaying/:tid', (req, res, next) => {
+  router.get('/thread/:tid', (req, res, next) => {
     const tid = req.params.tid;
     const threadKey = datastore.key(['Thread', tid]);
     datastore.get(threadKey)
-      .then((threadResults) => {
-        const nowPlaying = threadResults[0].now_playing;
-        res.send(200, { now_playing: nowPlaying });
-      });
-    next();
+    .then((threadResults) => {
+      const thread = threadResults[0];
+      res.send(200, { thread: thread });
+    }).catch(next);
   });
 
   router.get('/user/:psid', (req, res, next) => {
