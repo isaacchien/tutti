@@ -268,7 +268,7 @@ module.exports = function (router) {
     datastore.get(threadKey)
     .then((threadResults) => {
       const thread = threadResults[0];
-      res.send(200, { thread: thread });
+      res.send(200, { users:thread.users, now_playing:thread.now_playing });
     }).catch(next);
   });
 
