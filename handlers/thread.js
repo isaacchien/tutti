@@ -11,7 +11,7 @@ const log = bunyan.createLogger({ name: 'tutti' });
 
 
 function renewToken(psid, refreshToken) {
-  log.info(renewToken);
+  console.log("renewToken");
   const options = {
     url: config.get('Spotify.token'),
     headers: { Authorization: `Basic ${Buffer.from(`${clientID}:${clientSecret}`).toString('base64')}` },
@@ -29,23 +29,31 @@ function renewToken(psid, refreshToken) {
       // REFRESHED now get the user's old details
       const accessToken = JSON.parse(body).access_token;
 
-      const refreshedUser = {
-        access_token: accessToken,
-        refresh_token: refreshToken,
-      };
+
 
       const userKey = datastore.key(['User', psid]);
 
-      const entity = {
-        key: userKey,
-        data: refreshedUser,
-      };
+      datastore.get(userKey).then((userResults)=>{
+        let user = userResults[0]
+        user.access_token = accessToken
 
-      datastore.update(entity)
+        return user;
+      }).then((user)=>{
+        const entity = {
+          key: userKey,
+          data: user,
+        };
+
+        datastore.update(entity)
         .then(() => {
           // Task inserted successfully.
+          console.log("updated user with new token")
           resolve(accessToken);
         });
+
+      }).catch((error)=>{
+        console.log("seek error: ", error)
+      })
     });
   }));
   return promise;
@@ -65,7 +73,7 @@ function playSongForUser(uri, psid, accessToken, refreshToken, offset = 0) {
     request.put(options, (error, response, body) => {
       if (response.statusCode === 401) { // invalid token must renew
         renewToken(psid, refreshToken)
-          .then(newAccessToken => playSongForUser(uri, psid, newAccessToken, refreshToken));
+          .then(newAccessToken => playSongForUser(uri, psid, newAccessToken, refreshToken, offset));
       } else {
         resolve(response.statusCode)
       }
@@ -222,33 +230,109 @@ module.exports = function (router) {
 
     const tid = joinData.tid.toString();
     const psid = joinData.psid.toString();
+    const name = joinData.name;
     const accessToken = joinData.access_token;
     const refreshToken = joinData.refresh_token;
 
 
     const threadKey = datastore.key(['Thread', tid]);
 
+    const userKey = datastore.key(['User', psid]);
+
 
     datastore.get(threadKey)
-    .then((threadResults) => {
-      const nowPlaying = threadResults[0].now_playing;
+    .then((threadResults)=>{ // move the user to a new thread if needed
+      var thread = threadResults[0]
+
+      // create the thread if needed
+      if (thread && thread.users && thread.users.some((user) => user.psid === psid)) { // user is in the right thread
+        return thread.now_playing // move on
+      } else { // user moves to a new thread
+        if (thread === undefined){
+          thread = {
+            "users": [],
+            "now_playing": {}
+          }
+        } 
+        if (thread.users === undefined){
+          thread.users = []
+        }
+        const promises = []
+
+        // adds user to new thread
+        thread.users.push({
+          "psid": psid,
+          "name": name
+        })
+        const threadData = {
+          users: thread.users,
+          now_playing: thread.now_playing,
+        };
+        const threadEntity = {
+          key: threadKey,
+          data: threadData,
+        };
+        promises.push(datastore.upsert(threadEntity))
+
+        // remove user from old thread + update user with new tid
+        promises.push(datastore.get(userKey) 
+        .then((userResults)=>{
+          console.log("userResults: ", userResults);
+          let user = userResults[0]
+          const oldTid = user.tid
+
+          user.tid = tid
+          const updatedUserEntity = {
+            key: userKey,
+            data: user
+          }
+
+          datastore.upsert(updatedUserEntity)
+          return oldTid
+        }).then((oldTid)=>{
+          console.log("oldTid: ", oldTid);
+          const oldThreadKey = datastore.key(['Thread', oldTid]);
+          datastore.get(oldThreadKey)
+          .then((oldThreadResults)=>{ // remove user from old thread then udpate
+            let oldThread = oldThreadResults[0]
+            oldThread.users = oldThread.users.filter((user)=>{
+              return user.psid !== psid
+            })
+
+            const oldThreadEntity = {
+              key: oldThreadKey,
+              data: oldThread
+            }
+            datastore.upsert(oldThreadEntity)
+          })
+        }))
+
+        // updated user is added to thread. removed from old thread.
+        return Promise.all(promises).then(()=>{
+          return thread.now_playing
+        })
+
+      }
+
+    })
+    .then((nowPlaying) => { // play the current song 
+
+      if (nowPlaying === undefined){
+        return res.send(404)
+      }
       const start = nowPlaying.start;
       const duration = nowPlaying.duration;
       const uri = nowPlaying.uri;
 
+
       const offset = (Date.now()) - start;
 
       // song is still playing
-      log.info("offset: ", offset)
-      log.info("duration: ", duration)
       if (offset < duration) {
         // need to play song and then check if playing
         return playSongForUser(uri, psid, accessToken, refreshToken, offset)
         .then((playStatusCode)=>{
-          return checkCurrentlyPlaying(psid)
-        }).then((checkStatusCode) => {
-          log.info(checkStatusCode)
-          return res.send(checkStatusCode)
+          return res.send(playStatusCode)
         })
       } else {
         // no song to queue
@@ -392,6 +476,7 @@ module.exports = function (router) {
       const user = {
         access_token: accessToken,
         refresh_token: refreshToken,
+        tid: tid
       };
 
       const userKey = datastore.key(['User', psid]);
