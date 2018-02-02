@@ -1,12 +1,9 @@
 const datastore = require('../lib/datastore');
 const request = require('request');
 const config = require('config');
-
 const clientID = config.get('Client.id');
 const clientSecret = config.get('Client.secret');
 const bunyan = require('bunyan');
-
-
 const log = bunyan.createLogger({ name: 'tutti' });
 
 
@@ -30,7 +27,6 @@ function renewToken(psid, refreshToken) {
       const accessToken = JSON.parse(body).access_token;
 
 
-
       const userKey = datastore.key(['User', psid]);
 
       datastore.get(userKey).then((userResults)=>{
@@ -52,7 +48,7 @@ function renewToken(psid, refreshToken) {
         });
 
       }).catch((error)=>{
-        console.log("seek error: ", error)
+        console.log("error: ", error)
       })
     });
   }));
@@ -97,9 +93,6 @@ function playSongForUser(uri, psid, accessToken, refreshToken, offset = 0) {
       return playStatusCode
     }
   })
-  // seek if needed
-
-  // check if playing
 }
 
 function checkCurrentlyPlaying(originPSID) {
@@ -138,7 +131,96 @@ function asyncDelay(fx, offset, accessToken, delay) {
   return setTimeout(fx, delay, offset, accessToken);
 }
 
+function getTopTracks(accessToken){
+  const options = {
+    url: config.get('Spotify.topTracks'),
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+  };
+  const promise = new Promise(((resolve, reject) => {
+    request.get(options, (error, response, body) => {
+      // check if spotify is open
+      const topTracks = JSON.parse(body).items
+      resolve(topTracks);
+    });
+  }))
+  return promise;
+}
+function getRandom(arr, n) {
+    var result = new Array(n),
+        len = arr.length,
+        taken = new Array(len);
+    if (n > len)
+        throw new RangeError("getRandom: more elements taken than available");
+    while (n--) {
+        var x = Math.floor(Math.random() * len);
+        result[n] = arr[x in taken ? taken[x] : x];
+        taken[x] = --len;
+    }
+    return result;
+}
+
+function getRecommendations(seedTracksQuery, psid, accessToken, refreshToken) {
+  const url = config.get('Spotify.recommendations') + "?market=ES&seed_tracks=" + seedTracksQuery + "&limit=5"
+  const options = {
+    url: url,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+  };
+  const promise = new Promise((resolve, reject)=>{ 
+    request.get(options, (error, response, body) => {
+    // check if spotify is open
+      if (response.statusCode === 401) { // invalid token must renew
+        resolve(renewToken(psid, refreshToken)
+          .then(newAccessToken => getRecommendations(seedTracksQuery, psid, newAccessToken, refreshToken)));
+      } else {
+        resolve(body)
+      }
+    })
+  });
+  return promise
+}
 module.exports = function (router) {
+  router.post('/recommendations', (req, res, next)=>{
+    let joinData = null;
+    try {
+      joinData = JSON.parse(req.body);
+    } catch (e) {
+      joinData = req.body;
+    }
+
+    const tid = joinData.tid.toString();
+    const psid = joinData.psid.toString();
+    const accessToken = joinData.access_token;
+    const refreshToken = joinData.refresh_token;
+
+    //randomly pick 5 from group's top tracks
+    const threadKey = datastore.key(['Thread', tid]);
+
+    datastore.get(threadKey)
+    .then((threadResults) => {
+      topTracks = threadResults[0]['top_tracks'];
+      return getRandom(topTracks, 5)
+    }).then((seedTracks) => {
+      // request to spotify recommended
+      const seedTracksQuery = seedTracks.join(',')
+
+      getRecommendations(seedTracksQuery, psid, accessToken, refreshToken)
+      .then((body)=>{
+        res.send(200, JSON.parse(body))
+      })
+    }).catch((error) => {
+      console.log(error)
+    })
+
+  })
+
   router.post('/play', (req, res, next) => {
     // sends 200 if device is playing
     // sends 204 if device isn't playing but is added to db
@@ -267,6 +349,7 @@ module.exports = function (router) {
         const threadData = {
           users: thread.users,
           now_playing: thread.now_playing,
+          top_tracks: thread.top_tracks
         };
         const threadEntity = {
           key: threadKey,
@@ -277,7 +360,6 @@ module.exports = function (router) {
         // remove user from old thread + update user with new tid
         promises.push(datastore.get(userKey) 
         .then((userResults)=>{
-          console.log("userResults: ", userResults);
           let user = userResults[0]
           const oldTid = user.tid
 
@@ -290,7 +372,6 @@ module.exports = function (router) {
           datastore.upsert(updatedUserEntity)
           return oldTid
         }).then((oldTid)=>{
-          console.log("oldTid: ", oldTid);
           const oldThreadKey = datastore.key(['Thread', oldTid]);
           datastore.get(oldThreadKey)
           .then((oldThreadResults)=>{ // remove user from old thread then udpate
@@ -409,7 +490,7 @@ module.exports = function (router) {
     const tid = JSON.parse(req.body).tid;
     const name = JSON.parse(req.body).name;
 
-    // get tokens from spotify
+    // // get tokens from spotify
     const options = {
       url: config.get('Spotify.token'),
       headers: { Authorization: `Basic ${Buffer.from(`${clientID}:${clientSecret}`).toString('base64')}` },
@@ -421,79 +502,86 @@ module.exports = function (router) {
     };
 
     request.post(options, (error, response, body) => {
-      const promises = [];
-      // SENT
-      const threadKey = datastore.key(['Thread', tid]);
-
-      promises.push(new Promise((resolve, reject) => {
-        // get thread
-        datastore.get(threadKey)
-          .then((results) => {
-            const thread = results[0];
-            if (typeof thread === 'undefined') { // no thread you start the list
-              const threadData = {
-                users: [{
-                  'psid':psid,
-                  'name':name 
-                }],
-              };
-              const threadEntity = {
-                key: threadKey,
-                data: threadData,
-              };
-              datastore.upsert(threadEntity)
-                .then(() => {
-                  resolve('created new thread');
-                }).catch((err) => {
-                  console.error('ERROR:', err);
-                });
-            } else { // update the thread
-              thread.users.push({
-                'psid':psid,
-                'name':name 
-              });
-              const threadData = {
-                users: thread.users,
-                now_playing: thread.now_playing,
-              };
-              const threadEntity = {
-                key: threadKey,
-                data: threadData,
-              };
-              datastore.upsert(threadEntity)
-                .then(() => {
-                  // Task inserted successfully.
-                  resolve('joined thread');
-                });
-            }
-          });
-      }));
-
       const accessToken = JSON.parse(body).access_token;
       const refreshToken = JSON.parse(body).refresh_token;
 
-      // add to database
-      const user = {
-        access_token: accessToken,
-        refresh_token: refreshToken,
-        tid: tid
-      };
 
-      const userKey = datastore.key(['User', psid]);
+      // get top tracks
+      getTopTracks(accessToken).then((topTracks) => {
+        topTracks = topTracks.map(item => item.id)
+        const promises = [];
+        // SENT
+        const threadKey = datastore.key(['Thread', tid]);
 
-      const entity = {
-        key: userKey,
-        data: user,
-      };
-      promises.push(new Promise((resolve, reject) => {
-        datastore.upsert(entity)
-          .then(() => {
-            // Task inserted successfully.
-            resolve('inserted user');
-          });
-      }));
+        promises.push(new Promise((resolve, reject) => {
+          // get thread
+          datastore.get(threadKey)
+            .then((results) => {
+              const thread = results[0];
+              if (typeof thread === 'undefined') { // no thread you start the list
+                const threadData = {
+                  users: [{
+                    'psid':psid,
+                    'name':name
+                  }],
+                  top_tracks: topTracks
+                };
+                const threadEntity = {
+                  key: threadKey,
+                  data: threadData,
+                };
+                datastore.upsert(threadEntity)
+                  .then(() => {
+                    resolve('created new thread');
+                  }).catch((err) => {
+                    console.error('ERROR:', err);
+                  });
+              } else { // update the thread
+                thread.users.push({
+                  'psid':psid,
+                  'name':name 
+                });
+                const threadData = {
+                  users: thread.users,
+                  now_playing: thread.now_playing,
+                  top_tracks: thread.top_tracks.concat(topTracks)
+                };
+                const threadEntity = {
+                  key: threadKey,
+                  data: threadData,
+                };
+                datastore.upsert(threadEntity)
+                  .then(() => {
+                    resolve('joined thread');
+                  });
+              }
+            });
+        }));
 
-      Promise.all(promises)
+        // add to database
+
+        const user = {
+          access_token: accessToken,
+          refresh_token: refreshToken,
+          tid: tid,
+          top_tracks: topTracks
+        };
+
+        const userKey = datastore.key(['User', psid]);
+
+        const entity = {
+          key: userKey,
+          data: user,
+        };
+        promises.push(new Promise((resolve, reject) => {
+          datastore.upsert(entity)
+            .then(() => {
+              // Task inserted successfully.
+              resolve('inserted user');
+            });
+        }));
+
+        Promise.all(promises)
         .then(() => {
           res.send(200, {
             access_token: accessToken,
@@ -502,7 +590,9 @@ module.exports = function (router) {
         })
         .catch(next);
 
-      next();
+        next();
+
+      })
     });
   });
 };

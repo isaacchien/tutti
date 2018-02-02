@@ -7,6 +7,8 @@
     "token": "https://accounts.spotify.com/api/token",
     "play": "https://api.spotify.com/v1/me/player/play",
     "currentlyPlaying": "https://api.spotify.com/v1/me/player/currently-playing",
-    "seek": "https://api.spotify.com/v1/me/player/seek?position_ms"
+    "seek": "https://api.spotify.com/v1/me/player/seek?position_ms",
+    "topTracks": "https://api.spotify.com/v1/me/top/tracks",
+    "recommendations": "https://api.spotify.com/v1/recommendations"
   }
 }
